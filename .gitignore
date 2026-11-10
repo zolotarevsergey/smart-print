@@ -1,0 +1,12 @@
+.DS_Store
+**/bin/
+**/obj/
+windows/received/
+windows/print.log
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+*.jks
+dist/SportikPrint/

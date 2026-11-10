@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Smart print</string>
+    <string name="share_label">Друк на sportik</string>
+    <string name="printer_name">Canon MF3010 · Smart print</string>
+</resources>
