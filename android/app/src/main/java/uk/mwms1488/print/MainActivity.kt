@@ -89,12 +89,26 @@ class MainActivity : Activity() {
         if (requestCode == REQ_LOCAL_NETWORK) check()
     }
 
+    /** Рядок про принтер на USB-кабелі; порожньо, якщо нічого не під'єднано. */
+    private fun usbLine(): String {
+        val found = UsbPrinter.find(this)
+        if (found.isEmpty()) return ""
+        return found.joinToString("\n", prefix = "\n\n") { t ->
+            when {
+                !t.supported -> "⚠ USB: ${t.name} приймає лише IPP — по кабелю не друкує, під'єднайте його до мережі"
+                UsbPrinter.hasPermission(this, t.device) -> "✓ USB: ${t.name} — є в меню «Друк» як «${t.name} · USB»"
+                else -> "✓ USB: ${t.name} — при першому друці Android спитає дозвіл"
+            }
+        }
+    }
+
     private fun check() {
+        val usb = usbLine()
         if (LocalNetwork.needsRequest(this)) {
-            status.text = "✗ Немає дозволу на локальну мережу — без нього телефон не бачить ПК.\nНатисніть «Перевірити зв'язок», щоб дозволити, або дайте дозвіл у налаштуваннях застосунку (Дозволи → Пристрої поблизу)."
+            status.text = "✗ Немає дозволу на локальну мережу — без нього телефон не бачить ПК.\nНатисніть «Перевірити зв'язок», щоб дозволити, або дайте дозвіл у налаштуваннях застосунку (Дозволи → Пристрої поблизу)." + usb
             return
         }
-        status.text = "Перевіряю…"
+        status.text = "Перевіряю…$usb"
         val client = PrintClient(server.text.toString().ifBlank { Prefs.server(this) }, token.text.toString())
         io.execute {
             val text = try {
@@ -108,7 +122,7 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 "✗ " + (e.message ?: e.javaClass.simpleName)
             }
-            runOnUiThread { if (!isDestroyed) status.text = text }
+            runOnUiThread { if (!isDestroyed) status.text = text + usbLine() }
         }
     }
 

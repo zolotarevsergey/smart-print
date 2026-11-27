@@ -15,8 +15,8 @@ android {
         applicationId = "uk.mwms1488.print"
         minSdk = 26
         targetSdk = 37
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = 5
+        versionName = "1.1.0"
         buildConfigField("String", "DEFAULT_SERVER", "\"${prop("print.defaultServer", "192.168.0.88:8631")}\"")
     }
 

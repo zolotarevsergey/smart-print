@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- будь-який USB-пристрій з інтерфейсом класу «принтер» (7) -->
+<resources>
+    <usb-device class="7" />
+</resources>

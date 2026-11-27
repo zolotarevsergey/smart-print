@@ -10,6 +10,8 @@ import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.NumberPicker
 import android.widget.ProgressBar
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.TextView
 import java.io.ByteArrayInputStream
 import java.util.concurrent.Executors
@@ -58,18 +60,24 @@ sealed class PrintItem {
 object PrintFlow {
     private val io = Executors.newSingleThreadExecutor()
 
+    private fun networkHint(activity: Activity, onFinished: () -> Unit) {
+        AlertDialog.Builder(activity)
+            .setTitle("Немає доступу до мережі")
+            .setMessage(LocalNetwork.HINT)
+            .setPositiveButton("Відкрити Smart print") { _, _ ->
+                activity.startActivity(android.content.Intent(activity, MainActivity::class.java))
+                onFinished()
+            }
+            .setNegativeButton("Скасувати") { _, _ -> onFinished() }
+            .setOnCancelListener { onFinished() }
+            .show()
+    }
+
     fun confirmAndPrint(activity: Activity, items: List<PrintItem>, onFinished: () -> Unit) {
-        if (LocalNetwork.needsRequest(activity)) {
-            AlertDialog.Builder(activity)
-                .setTitle("Немає доступу до мережі")
-                .setMessage(LocalNetwork.HINT)
-                .setPositiveButton("Відкрити Smart print") { _, _ ->
-                    activity.startActivity(android.content.Intent(activity, MainActivity::class.java))
-                    onFinished()
-                }
-                .setNegativeButton("Скасувати") { _, _ -> onFinished() }
-                .setOnCancelListener { onFinished() }
-                .show()
+        // принтер, під'єднаний кабелем до телефона, — тоді вибір «USB чи через ПК»
+        val usb = UsbPrinter.find(activity).filter { it.supported }
+        if (usb.isEmpty() && LocalNetwork.needsRequest(activity)) {
+            networkHint(activity, onFinished)
             return
         }
         val dp = { v: Int -> TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), activity.resources.displayMetrics).toInt() }
@@ -107,17 +115,74 @@ object PrintFlow {
         }
         box.addView(fit)
 
+        // позиція = індекс у usb; остання — друк через ПК
+        val where = RadioGroup(activity).apply { visibility = if (usb.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE }
+        usb.forEachIndexed { i, t -> where.addView(RadioButton(activity).apply { id = i + 1; text = "${t.name} — USB-кабель" }) }
+        where.addView(RadioButton(activity).apply { id = usb.size + 1; text = activity.getString(R.string.printer_name) + " — через ПК" })
+        where.check(1)
+        where.setOnCheckedChangeListener { _, id ->
+            fit.visibility = if (hasPdf && id == usb.size + 1) android.view.View.VISIBLE else android.view.View.GONE
+        }
+        if (usb.isNotEmpty()) {
+            fit.visibility = android.view.View.GONE // по USB PDF друкує сам принтер
+            box.addView(where, 1)
+        }
+
         AlertDialog.Builder(activity)
-            .setTitle(activity.getString(R.string.printer_name))
+            .setTitle(if (usb.isEmpty()) activity.getString(R.string.printer_name) else "Друк")
             .setView(box)
-            .setPositiveButton("Друкувати") { _, _ -> send(activity, items, picker.value, fit.isChecked, onFinished) }
+            .setPositiveButton("Друкувати") { _, _ ->
+                val target = usb.getOrNull(where.checkedRadioButtonId - 1)
+                when {
+                    target != null -> UsbPrinter.requestPermission(activity, target.device) { granted ->
+                        if (granted) {
+                            send(activity, items, picker.value, onFinished, "Відкриваю USB-принтер…") { item ->
+                                val doc = UsbDocs.toPdf(activity, item)
+                                doc.stream.use { UsbPrinter.send(activity, target, it, UsbPrinter.Options(item.name, picker.value)) }
+                                doc.pages
+                            }
+                        } else {
+                            AlertDialog.Builder(activity)
+                                .setTitle("Немає дозволу на USB")
+                                .setMessage("Без дозволу застосунок не може надіслати документ у принтер. Спробуйте ще раз і натисніть «OK» у вікні Android.")
+                                .setPositiveButton("OK") { _, _ -> onFinished() }
+                                .setOnCancelListener { onFinished() }
+                                .show()
+                        }
+                    }
+                    LocalNetwork.needsRequest(activity) -> networkHint(activity, onFinished)
+                    else -> {
+                        val client = PrintClient.fromPrefs(activity)
+                        val fitPdf = fit.isChecked
+                        send(activity, items, picker.value, onFinished, "З'єднуюсь з ПК…") { item ->
+                            when (item) {
+                                is PrintItem.File -> activity.contentResolver.openInputStream(item.uri)?.use {
+                                    client.print(it, item.size, item.mime, item.name, picker.value, fit = fitPdf)
+                                } ?: throw PrintException("Не вдалося відкрити файл")
+                                is PrintItem.Text -> {
+                                    val bytes = item.text.toByteArray(Charsets.UTF_8)
+                                    client.print(ByteArrayInputStream(bytes), bytes.size.toLong(), item.mime, item.name, picker.value)
+                                }
+                            }.pages
+                        }
+                    }
+                }
+            }
             .setNegativeButton("Скасувати") { _, _ -> onFinished() }
             .setOnCancelListener { onFinished() }
             .show()
     }
 
-    private fun send(activity: Activity, items: List<PrintItem>, copies: Int, fit: Boolean, onFinished: () -> Unit) {
-        val label = TextView(activity).apply { text = "З'єднуюсь з ПК…" }
+    /** [printOne] друкує один документ і повертає кількість сторінок (null — невідомо, як для PDF по USB). */
+    private fun send(
+        activity: Activity,
+        items: List<PrintItem>,
+        copies: Int,
+        onFinished: () -> Unit,
+        connecting: String,
+        printOne: (PrintItem) -> Int?,
+    ) {
+        val label = TextView(activity).apply { text = connecting }
         val progress = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -128,7 +193,6 @@ object PrintFlow {
         }
         val wait = AlertDialog.Builder(activity).setView(progress).setCancelable(false).show()
 
-        val client = PrintClient.fromPrefs(activity)
         io.execute {
             val lines = mutableListOf<String>()
             var failed = 0
@@ -137,16 +201,8 @@ object PrintFlow {
                     label.text = if (items.size == 1) "Надсилаю «${item.name}»…" else "Надсилаю ${i + 1} з ${items.size}: «${item.name}»…"
                 }
                 try {
-                    val r = when (item) {
-                        is PrintItem.File -> activity.contentResolver.openInputStream(item.uri)?.use {
-                            client.print(it, item.size, item.mime, item.name, copies, fit = fit)
-                        } ?: throw PrintException("Не вдалося відкрити файл")
-                        is PrintItem.Text -> {
-                            val bytes = item.text.toByteArray(Charsets.UTF_8)
-                            client.print(ByteArrayInputStream(bytes), bytes.size.toLong(), item.mime, item.name, copies)
-                        }
-                    }
-                    lines += "✓ ${item.name} — ${pagesText(r.pages)}" + if (copies > 1) " × $copies" else ""
+                    val pages = printOne(item)
+                    lines += "✓ ${item.name}" + (if (pages != null) " — ${pagesText(pages)}" else "") + if (copies > 1) " × $copies" else ""
                 } catch (e: PrintException) {
                     failed++
                     lines += "✗ ${item.name}: ${e.message}"
